@@ -1,0 +1,101 @@
+---
+- name: generate root ca
+  block:
+    # Create the directory that will host the root CA certificate and its' data
+    - include_tasks: populate.yml
+      vars:
+        authority_root: "{{ root_authority_directory }}"
+      tags:
+        - generate_root_ca_certificate
+
+    # Randomly generate a password for the private key that will be required when
+    # creating the CA certificate, and signing certificates.
+    - name: generate random password
+      set_fact:
+        generated_password: "{{ lookup('password', '/dev/null length={{ private_key_passphrase_length }} chars=ascii_letters') }}"
+      tags:
+        - generate_root_ca_certificate
+        
+    - name: encrypt generated password using ansible vault
+      local_action: "shell ansible-vault encrypt_string --vault-password-file '{{ vault_password_file }}' '{{ generated_password }}' --name root_ca_private_key_passphrase"
+      register: encrypted_password
+      when: vault_password_file is defined
+      tags:
+        - generate_root_ca_certificate
+      
+    - name: store encrypted password on node
+      copy:
+        content: "{{ encrypted_password.stdout }}"
+        dest: "{{ root_authority_directory }}/.root_ca_password"
+        follow: no
+      when: vault_password_file is defined
+      tags:
+        - generate_root_ca_certificate
+        
+    - name: store unencrypted password on node
+      copy:
+        content: "{{ generated_password }}"
+        dest: "{{ root_authority_directory }}/.root_ca_password"
+        follow: no
+      when: vault_password_file is not defined
+      tags:
+        - generate_root_ca_certificate
+        
+    - name: warning for plain text files
+      fail:
+        msg: 'the vault password file has not been specified, therefore an unencrypted password file exists on the remote machine.'
+      ignore_errors: yes
+        
+    # Generate Root CA Private Key, used to sign requested certificates with. In
+    # this case, this private key, in combination with the root ca certificate will
+    # be used to sign the intermediate certificate.
+    - name: generate root ca key
+      openssl_privatekey:
+        path: "{{ root_authority_directory }}/private/ca.key.pem"
+        passphrase: "{{ generated_password }}"
+        size: "{{ root_ca_private_key_size }}"
+        cipher: "{{ private_key_cipher }}"
+      tags:
+        - generate_root_ca_certificate
+
+    # Generate the certificate signing request using the root ca's private key
+    # which will be passed on to the openssl_certificate module to generate the
+    # final root CA certificate
+    - name: generate certificate signing request
+      openssl_csr:
+        path: "{{ root_authority_directory }}/private/ca.csr.pem"
+        privatekey_path: "{{ root_authority_directory }}/private/ca.key.pem"
+        privatekey_passphrase: "{{ generated_password }}"
+        common_name: "{{ inventory_hostname }}"
+      tags:
+        - generate_root_ca_certificate
+
+    - name: generate root ca certificate
+      openssl_certificate:
+        csr_path: "{{ root_authority_directory }}/private/ca.csr.pem"
+        path: "{{ root_authority_directory }}/certs/ca.crt.pem"
+        privatekey_path: "{{ root_authority_directory }}/private/ca.key.pem"
+        privatekey_passphrase: "{{ generated_password }}"
+        provider: selfsigned
+      tags:
+        - generate_root_ca_certificate
+        
+    - name: remove certificate signing request file
+      file:
+        path: "{{ root_authority_directory }}/private/ca.csr.pem"
+        state: absent
+      tags:
+        - generate_root_ca_certificate
+        
+    # Grab generated certificate from the root authority and store it on the
+    # ansible controller
+    - name: fetch ca certificate from root authority
+      fetch:
+        src: "{{ root_authority_directory }}/certs/ca.crt.pem"
+        dest: "{{ fetch_root_ca_certificate_location }}"
+        flat: yes
+  always:
+    - name: clear root ca password
+      file:
+        path: ~/.root_ca_password
+        state: absent

@@ -1,0 +1,198 @@
+---
+- name: generate intermediate ca
+  block:
+  # Select a random root authority node from the inventory file, and extract the
+  # IP address from it. This will be used to transfer the generated CSR file from
+  # the intermediate CA to a selected Root CA to be signed and created, then
+  # pulled back to the intermediate CA.
+  - name: select root authority to use
+    set_fact:
+      target_authority_node: "{{ hostvars[item][ansible_ip_version]['address'] }}"
+    with_random_choice: "{{ groups[root_certificate_authority_group] }}"
+    
+  # Create the directory that will host the intermediate CA certificate and its' data
+  - include_tasks: populate.yml
+    vars:
+      authority_root: "{{ intermediate_authority_directory }}"
+      
+  # Randomly generate a password for the private key that will be required when
+  # creating the CA certificate, and signing certificates.
+  - name: generate random password
+    set_fact:
+      generated_password: "{{ lookup('password', '/dev/null length={{ private_key_passphrase_length }} chars=ascii_letters') }}"
+    tags:
+      - generate_root_ca_certificate
+      
+  - name: encrypt generated password using ansible vault
+    local_action: "shell ansible-vault encrypt_string --vault-password-file '{{ vault_password_file }}' '{{ generated_password }}' --name intermediate_ca_private_key_passphrase"
+    register: encrypted_password
+    when: vault_password_file is defined
+    tags:
+      - generate_root_ca_certificate
+    
+  - name: store encrypted password on node
+    copy:
+      content: "{{ encrypted_password.stdout }}"
+      dest: "{{ intermediate_authority_directory }}/.intermediate_ca_password"
+      follow: no
+    when: vault_password_file is defined
+    tags:
+      - generate_root_ca_certificate
+      
+  - name: store unencrypted password on node
+    copy:
+      content: "{{ generated_password }}"
+      dest: "{{ intermediate_authority_directory }}/.intermediate_ca_password"
+      follow: no
+    when: vault_password_file is not defined
+    tags:
+      - generate_root_ca_certificate
+      
+  - name: warning for plain text files
+    fail:
+      msg: 'the vault password file has not been specified, therefore an unencrypted password file exists on the remote machine.'
+    ignore_errors: yes
+      
+  # Get root authority private key password
+  - name: fetch encrypted password
+    fetch:
+      src: "{{ root_authority_directory }}/.root_ca_password"
+      dest: "~/.root_ca_password"
+      flat: yes
+    delegate_to: "{{ target_authority_node }}"
+      
+  - name: import encrypted password
+    include_vars:
+      file: "~/.root_ca_password"
+    when: vault_password_file is defined
+    
+  - name: import unencrypted password
+    set_fact:
+      root_ca_private_key_passphrase: "{{ lookup('file', '~/.root_ca_password') }}"
+    when: vault_password_file is not defined
+      
+  # Generate Intermediate CA Key
+  - name: generate intermediate ca key
+    openssl_privatekey:
+      path: "{{ intermediate_authority_directory }}/private/ca.key.pem"
+      passphrase: "{{ generated_password }}"
+      size: "{{ root_ca_private_key_size }}"
+      cipher: "{{ private_key_cipher }}"
+    tags:
+      - generate_ca
+
+  # Construct path to csr
+  - name: construct path to csr
+    set_fact:
+      csr_output_path: "{{ intermediate_authority_directory }}/private/ca.csr.pem"
+
+  # Generate SSL Certificate Request
+  - name: generate ssl certificate request
+    openssl_csr:
+      path: "{{ csr_output_path }}"
+      privatekey_path: "{{ intermediate_authority_directory }}/private/ca.key.pem"
+      privatekey_passphrase: "{{ generated_password }}"
+      country_name: "{{ root_authority_country }}"
+      organization_name: "{{ root_authority_organization }}"
+      common_name: "{{ inventory_hostname }}"
+    tags:
+      - generate_ca
+
+  # Pull SSL Certificate Request to Root Authority
+  - name: pull certificate signing request from intermediate authority
+    fetch:
+      src: "{{ csr_output_path }}"
+      dest: "/tmp/{{ inventory_hostname }}.csr.pem.tmp"
+      flat: yes
+      
+  - name: push certificate signing request to root authority
+    copy:
+      src: "/tmp/{{ inventory_hostname }}.csr.pem.tmp"
+      dest: "/tmp/{{ inventory_hostname }}.csr.pem"
+      follow: no
+    delegate_to: "{{ target_authority_node }}"
+    tags:
+      - generate_ca
+      
+  - name: remove temporary certificate signing request from controller
+    file:
+      path: "/tmp/{{ inventory_hostname }}.csr.pem.tmp"
+      state: absent
+
+  # TODO: Modify openssl_crl / openssl_certificate module to allow custom configuration files
+  - name: generate ssl certificate
+    openssl_certificate:
+      path: "{{ root_authority_directory }}/certs/{{ inventory_hostname }}_intermediate.crt"
+      csr_path: "/tmp/{{ inventory_hostname }}.csr.pem"
+      ownca_path: "{{ root_authority_directory }}/certs/ca.crt.pem"
+      ownca_privatekey_path: "{{ root_authority_directory }}/private/ca.key.pem"
+      ownca_privatekey_passphrase: "{{ root_ca_private_key_passphrase }}"
+      provider: ownca
+    delegate_to: "{{ target_authority_node }}"
+    tags:
+      - generate_ca
+      
+  - name: remove temporary certificate signing request from controller
+    local_action: "file path=/tmp/{{ inventory_hostname }}.csr.pem state=absent"
+      
+  - name: pull certificate from root ca
+    fetch:
+      src: "{{ root_authority_directory }}/certs/{{ inventory_hostname }}_intermediate.crt"
+      dest: "/tmp/{{ inventory_hostname }}.crt.pem"
+      flat: yes
+    tags:
+      - generate_ca
+    delegate_to: "{{ target_authority_node }}"
+      
+  - name: push intermediate certificate to node
+    copy:
+      src: "/tmp/{{ inventory_hostname }}.crt.pem"
+      dest: "{{ intermediate_authority_directory }}/certs/ca.crt.pem"
+    tags:
+      - generate_ca
+      
+  - name: remove temporary intermediate certificate
+    local_action: "file path=/tmp/{{ inventory_hostname }}.crt.pem state=absent"
+      
+  - name: pull root certificate from root ca
+    fetch:
+      src: "{{ root_authority_directory }}/certs/ca.crt.pem"
+      dest: "/tmp/ca.crt.pem"
+      flat: yes
+    tags:
+      - generate_ca
+    delegate_to: "{{ target_authority_node }}"
+      
+  - name: push root certificate to node
+    copy:
+      src: "/tmp/ca.crt.pem"
+      dest: "{{ intermediate_authority_directory }}/certs/root_ca.crt.pem"
+    tags:
+      - generate_ca
+      
+  - name: remove temporary ca certificate
+    local_action: "file path=/tmp/ca.crt.pem state=absent"
+      
+  - name: combine ca cert
+    shell: "cat {{ intermediate_authority_directory }}/certs/ca.crt.pem {{ intermediate_authority_directory }}/certs/root_ca.crt.pem > {{ intermediate_authority_directory }}/certs/combined_ca.crt"
+    tags:
+      - create_ca
+      
+  # Grab generated certificate from the intermediate authority and store it on the
+  # ansible controller
+  - name: fetch ca certificate from intermediate authority
+    fetch:
+      src: "{{ intermediate_authority_directory }}/certs/ca.crt.pem"
+      dest: "{{ fetch_intermediate_ca_certificate_location }}"
+      flat: yes
+      
+  - name: fetch combined ca certificate from intermediate authority
+    fetch:
+      src: "{{ intermediate_authority_directory }}/certs/combined_ca.crt"
+      dest: "{{ fetch_combined_ca_certificate_location }}"
+      flat: yes
+  always:
+    - name: clear intermediate ca password
+      file:
+        path: ~/.root_ca_password
+        state: absent

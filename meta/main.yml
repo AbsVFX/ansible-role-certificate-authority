@@ -1,0 +1,9 @@
+---
+dependencies: []
+
+galaxy_info:
+  author: absvfx
+  description: Certificate Authority Management
+  company: AbsVFX
+  platforms:
+    - Arch

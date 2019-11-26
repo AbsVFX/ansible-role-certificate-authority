@@ -1,0 +1,42 @@
+---
+- name: create authority directory
+  file:
+    path: "{{ authority_root }}"
+    state: directory
+  tags:
+    - create_ca
+
+- name: create authority sub-directories
+  file:
+    path: "{{ authority_root }}/{{ item }}"
+    state: directory
+  tags:
+    - create_ca
+  loop:
+    - certs
+    - crl
+    - newcerts
+
+- name: create authority sub-directories
+  file:
+    path: "{{ authority_root }}/{{ item }}"
+    state: directory
+    mode: 0700
+  tags:
+    - create_ca
+  loop:
+    - private
+
+- name: create initial auth id
+  file:
+    path: "{{ authority_root }}/index.txt"
+    state: touch
+  tags:
+    - create_ca
+
+- name: create initial serial id
+  copy:
+    dest: "{{ authority_root }}/serial"
+    content: 1000
+  tags:
+    - create_ca

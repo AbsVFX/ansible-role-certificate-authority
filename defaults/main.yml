@@ -1,0 +1,30 @@
+---
+# Name of the inventory group that will contain the node(s) hosting the
+# root CA certificate(s)
+root_certificate_authority_group: root_authority
+
+# Name of the inventory group that will contain the node(s) hosting the
+# intermediate CA certificate(s)
+intermediate_certificate_authority_group: authority
+
+# Directory on the root certificate authority that will host the CA certificate
+# and its' information, such as revocation lists
+root_authority_directory: /root/.ca
+intermediate_authority_directory: /root/.ca/intermediate
+
+# Set the private key passphrase length for generating the Root & Intermediate CA
+# private keys
+private_key_passphrase_length: 24
+
+# Set the size of all private keys generated
+root_ca_private_key_size: 4096
+
+# Set default parameters for all private key generated
+private_key_cipher: aes256
+
+# Set location on the ansible host where the transferred certificates should live
+fetch_root_ca_certificate_location: ~/.certificate_authority/root.ca.cert.pem
+fetch_intermediate_ca_certificate_location: ~/.certificate_authority/root.ca.cert.pem
+fetch_combined_ca_certificate_location: ~/.certificate_authority/root.ca.cert.pem
+
+ansible_ip_version: ansible_default_ipv4

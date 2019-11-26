@@ -1,0 +1,6 @@
+---
+- name: clear root ca password
+  local_action: file path=~/.root_ca_password state=absent
+    
+- name: clear intermediate ca password
+  local_action: file path=~/.intermediate_ca_password state=absent

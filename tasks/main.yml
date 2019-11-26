@@ -1,0 +1,19 @@
+---
+# Perform the generation of the Root CA certificate, if the
+# generate_root_ca_certificate tag is specified, and the target node
+# is in the root ca group as defined in the inventory file.
+- include_tasks: root_certificate_authority.yml
+  when: "'{{ root_certificate_authority_group }}' in group_names"
+  tags:
+    - generate_root_ca_certificate
+
+# Perform the generation of the Root CA certificate, if the
+# intermediate_certificate_authority_group tag is specified, and the 
+# target node is in the intermediate ca group as defined in the inventory file.
+- include_tasks: intermediate_certificate_authority.yml
+  when: "'{{ intermediate_certificate_authority_group }}' in group_names"
+  tags:
+    - generate_intermediate_ca_certificate
+
+# Always regenerate a key/cert combo when this role is called
+- include_tasks: generate_certificate.yml
